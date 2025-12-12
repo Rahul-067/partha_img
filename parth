@@ -118,7 +118,7 @@ if record:
 
     recorder = cv2.VideoWriter(
         "demo1.avi",
-        cv2.VideoWriter_fourcc('MJPG'),
+        cv2.VideoWriter_fourcc('*MJPG'),
         30,
         (resW, resH)
     )

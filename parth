@@ -118,7 +118,7 @@ if record:
 
     recorder = cv2.VideoWriter(
         "demo1.avi",
-        cv2.VideoWriter_fourcc('*MJPG'),
+        cv2.VideoWriter_fourcc(*'MJPG'),
         30,
         (resW, resH)
     )
@@ -239,3 +239,4 @@ if record: recorder.release()
 cv2.destroyAllWindows()
 
 print(f"Average FPS: {avg_frame_rate:.2f}")
+

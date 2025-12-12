@@ -11,8 +11,8 @@ from ultralytics import YOLO
 # ---- ARDUINO SERIAL CONNECTION ----
 import serial
 try:
-    arduino = serial.Serial('COM3', 9600, timeout=1)
-    print("Arduino connected on COM3")
+    arduino = serial.Serial('COM6', 9600, timeout=1)
+    print("Arduino connected on COM6")
 except:
     arduino = None
     print("WARNING: Arduino NOT connected")

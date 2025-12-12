@@ -8,44 +8,27 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# ============================================
-# 🔌 ARDUINO SETUP
-# ============================================
+# ---- ARDUINO SERIAL CONNECTION ----
 import serial
-
-ARDUINO_PORT = "COM4"   # <<< CHANGE THIS
-ARDUINO_BAUD = 9600
-
 try:
-    arduino = serial.Serial(ARDUINO_PORT, ARDUINO_BAUD)
-    time.sleep(2)
-    print(f"[OK] Arduino connected on {ARDUINO_PORT}")
+    arduino = serial.Serial('COM3', 9600, timeout=1)
+    print("Arduino connected on COM3")
 except:
-    print("[WARNING] Arduino not detected. Running without hardware.")
     arduino = None
-
-LAST_SIGNAL = -1  # Prevent spam
-
-def send_to_arduino(value):
-    global LAST_SIGNAL
-    if arduino is None:
-        return
-    if LAST_SIGNAL != value:
-        arduino.write(str(value).encode())
-        LAST_SIGNAL = value
-        print(f"[ARDUINO] Sent: {value}")
+    print("WARNING: Arduino NOT connected")
 
 
-# ============================================
-# YOLO Argument Parser
-# ============================================
+# ----------------- ARGUMENT PARSER --------------------
 parser = argparse.ArgumentParser()
-
-parser.add_argument('--model', required=True)
-parser.add_argument('--source', required=True)
-parser.add_argument('--thresh', default=0.5)
-parser.add_argument('--resolution', default=None)
-parser.add_argument('--record', action='store_true')
+parser.add_argument('--model', required=True,
+                    help='Path to YOLO model file (example: "runs/detect/train/weights/best.pt")')
+parser.add_argument('--source', required=True,
+                    help='Source: image path, folder, video file, "usb0", etc.')
+parser.add_argument('--thresh', default=0.5, help='Confidence threshold')
+parser.add_argument('--resolution', default=None,
+                    help='Resolution WxH (example: 1280x720)')
+parser.add_argument('--record', action='store_true',
+                    help='Record output video')
 
 args = parser.parse_args()
 
@@ -55,172 +38,164 @@ min_thresh = float(args.thresh)
 user_res = args.resolution
 record = args.record
 
-
-# ============================================
-# Load YOLO Model
-# ============================================
+# Check if model exists
 if not os.path.exists(model_path):
-    print("ERROR: Model not found!")
+    print("ERROR: Model file not found!")
     sys.exit(0)
 
+# Load YOLO model
 model = YOLO(model_path)
 labels = model.names
 
-
-# ============================================
-# INPUT SOURCE PARSING
-# ============================================
-img_ext_list = ['.jpg','.jpeg','.png','.bmp']
-vid_ext_list = ['.mp4','.avi','.mkv','.mov','.wmv']
+# Determine source type
+img_ext = ['.jpg','.jpeg','.png','.bmp']
+vid_ext = ['.mp4','.avi','.mov','.mkv','.wmv']
 
 if os.path.isdir(img_source):
     source_type = 'folder'
-
 elif os.path.isfile(img_source):
     _, ext = os.path.splitext(img_source)
-    if ext.lower() in img_ext_list:
-        source_type = 'image'
-    elif ext.lower() in vid_ext_list:
-        source_type = 'video'
+    if ext.lower() in img_ext: source_type = 'image'
+    elif ext.lower() in vid_ext: source_type = 'video'
     else:
-        print("Unsupported file format!")
+        print("Unsupported file type")
         sys.exit(0)
-
-elif "usb" in img_source:
-    source_type = "usb"
-    usb_idx = int(img_source.replace("usb",""))
-
+elif 'usb' in img_source:
+    source_type = 'usb'
+    usb_idx = int(img_source.replace('usb', ''))
 else:
-    print("Invalid source!")
+    print("Invalid source")
     sys.exit(0)
 
-
-# ============================================
-# DISPLAY RESOLUTION PARSING
-# ============================================
+# Resolution
 resize = False
 if user_res:
     resize = True
-    resW, resH = map(int, user_res.split("x"))
+    resW, resH = map(int, user_res.split('x'))
 
-
-# ============================================
-# RECORDING SETUP
-# ============================================
+# Recording
 if record:
-    if source_type not in ["video","usb"]:
-        print("Recording only valid for video or USB camera.")
-        sys.exit(0)
-
     if not user_res:
-        print("Specify --resolution for recording.")
+        print("Need resolution to record video.")
         sys.exit(0)
+    recorder = cv2.VideoWriter("demo1.avi",
+                               cv2.VideoWriter_fourcc(*"MJPG"),
+                               30, (resW, resH))
 
-    recorder = cv2.VideoWriter(
-        "demo1.avi",
-        cv2.VideoWriter_fourcc(*'MJPG'),
-        30,
-        (resW, resH)
-    )
-
-
-# ============================================
-# INITIALIZE CAMERA OR FILE INPUT
-# ============================================
+# Prepare source
 if source_type == 'image':
     imgs_list = [img_source]
 
 elif source_type == 'folder':
-    imgs_list = [f for f in glob.glob(img_source + "/*") if os.path.splitext(f)[1].lower() in img_ext_list]
+    imgs_list = []
+    for f in glob.glob(img_source + "/*"):
+        _, ext = os.path.splitext(f)
+        if ext.lower() in img_ext: imgs_list.append(f)
 
-elif source_type in ['video','usb']:
-    cap = cv2.VideoCapture(img_source if source_type == 'video' else usb_idx)
-    if user_res:
+elif source_type == 'video':
+    cap = cv2.VideoCapture(img_source)
+
+elif source_type == 'usb':
+    cap = cv2.VideoCapture(usb_idx)
+
+    if resize:
         cap.set(3, resW)
         cap.set(4, resH)
 
+# Colors for bounding box
+bbox_colors = [
+    (164,120,87), (68,148,228), (93,97,209), (178,182,133),
+    (88,159,106), (96,202,231), (159,124,168), (169,162,241),
+    (98,118,150), (172,176,184)
+]
 
-# ============================================
-# INFERENCE LOOP
-# ============================================
-TARGET_CLASS = "Hello Partha"   # <<< CHANGE THIS TO YOUR CLASS
-
-img_count = 0
 frame_rate_buffer = []
-fps_avg_len = 100
+fps_avg_len = 200
 avg_frame_rate = 0
+img_count = 0
 
+
+# ------------------------ MAIN LOOP --------------------------
 while True:
+
     t_start = time.perf_counter()
 
-    # Load frame depending on source
-    if source_type in ['image','folder']:
+    # Load source frame
+    if source_type == 'image' or source_type == 'folder':
         if img_count >= len(imgs_list):
-            break
+            print("All images processed.")
+            sys.exit(0)
         frame = cv2.imread(imgs_list[img_count])
         img_count += 1
 
-    else:
+    elif source_type == 'video' or source_type == 'usb':
         ret, frame = cap.read()
-        if not ret: break
+        if not ret or frame is None:
+            print("Video/Cam ended or error")
+            break
 
-    # Resize if needed
+    # Resize
     if resize:
         frame = cv2.resize(frame, (resW, resH))
 
-    # YOLO inference
+    # YOLO detection
     results = model(frame, verbose=False)
     detections = results[0].boxes
 
-    detected_classnames = []
+    object_count = 0
 
-    # Draw detections
+    # Loop through detections
     for det in detections:
-        classid = int(det.cls)
+
+        xyxy = det.xyxy.cpu().numpy().squeeze()
+        xmin, ymin, xmax, ymax = map(int, xyxy)
+
+        classid = int(det.cls.item())
         classname = labels[classid]
-        conf = float(det.conf)
 
-        if conf < min_thresh: 
-            continue
+        conf = det.conf.item()
 
-        # Extract bounding box
-        xyxy = det.xyxy.cpu().numpy().astype(int).flatten()
-        xmin, ymin, xmax, ymax = xyxy
+        if conf >= min_thresh:
 
-        # Draw box
-        cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), (0,255,0), 2)
-        cv2.putText(frame, f"{classname} {conf*100:.1f}%", 
-                    (xmin, ymin-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0),2)
-        
-        detected_classnames.append(classname)
+            color = bbox_colors[classid % len(bbox_colors)]
+            cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), color, 2)
+
+            label = f"{classname}: {int(conf*100)}%"
+            cv2.putText(frame, label, (xmin, ymin-5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            object_count += 1
+
+            # ---------- ARDUINO LOGIC ----------
+            if classname == "Hello Partha":
+                print(">>> Hello Partha detected!")
+
+                if arduino:
+                    arduino.write(b'1')
+                    print("Sent 1 to Arduino")
+            else:
+                if arduino:
+                    arduino.write(b'0')
 
 
-    # ============================================
-    # 🔥 ARDUINO CONTROL BASED ON YOLO DETECTION
-    # ============================================
-    if TARGET_CLASS in detected_classnames:
-        send_to_arduino(1)   # Face detected → Light ON
-    else:
-        send_to_arduino(0)   # Not detected → Light OFF
-
-
-    # ============================================
-    # DISPLAY RESULTS
-    # ============================================
-    cv2.putText(frame, f"Objects: {len(detections)}", (10,40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255),2)
+    # FPS display
+    cv2.putText(frame, f"FPS: {avg_frame_rate:.2f}", (10,20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
 
     cv2.imshow("YOLO detection results", frame)
+    if record:
+        recorder.write(frame)
 
-    if record: recorder.write(frame)
-
+    # Keyboard input
     key = cv2.waitKey(1)
-    if key == ord('q'): break
-
+    if key in [ord('q'), ord('Q')]:
+        break
+    if key in [ord('p'), ord('P')]:
+        cv2.imwrite("capture.png", frame)
 
     # FPS calculation
-    t_stop = time.perf_counter()
-    fps = 1/(t_stop - t_start)
+    t_end = time.perf_counter()
+    fps = 1 / (t_end - t_start)
 
     if len(frame_rate_buffer) >= fps_avg_len:
         frame_rate_buffer.pop(0)
@@ -228,15 +203,15 @@ while True:
     avg_frame_rate = np.mean(frame_rate_buffer)
 
 
-# ============================================
-# CLEANUP
-# ============================================
-if source_type in ['video','usb']:
+# Cleanup
+print(f"Avg FPS: {avg_frame_rate:.2f}")
+try:
     cap.release()
-
-if record: recorder.release()
-
+except:
+    pass
 cv2.destroyAllWindows()
+if record:
+    recorder.release()
 
-print(f"Average FPS: {avg_frame_rate:.2f}")
+
 
